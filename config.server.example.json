@@ -1,0 +1,10 @@
+{
+  "role": "server",
+  "domain": "example.com",
+  "ws_path": "/assets/app.js",
+  "target": "127.0.0.1:22",
+  "listen_port": 443,
+  "tunnel_key": "change-me-secret",
+  "cert_path": "/etc/letsencrypt/live/example.com/fullchain.pem",
+  "key_path": "/etc/letsencrypt/live/example.com/privkey.pem"
+}

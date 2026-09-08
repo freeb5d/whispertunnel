@@ -1,0 +1,6 @@
+{
+  "role": "client",
+  "remote_url": "wss://example.com/assets/app.js",
+  "local_addr": "127.0.0.1:2222",
+  "tunnel_key": "change-me-secret"
+}
