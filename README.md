@@ -1,56 +1,58 @@
 # WhisperTunnel
 
-A lightweight TCP-over-WebSocket tunnel written in Go, designed to blend
-in with ordinary HTTPS web traffic (WSS handshake on port 443, browser-like
-headers, a real TLS certificate).
+A lightweight TCP-over-WebSocket tunnel written in Go. Traffic is carried
+over a standard WSS connection on port 443 with a real TLS certificate,
+so it looks like ordinary HTTPS traffic to network inspection.
 
 ## How it works
-
-- **Server** (runs on your remote/exit box): terminates TLS, serves a
-  normal-looking page at `/`, and upgrades a chosen path (e.g.
-  `/assets/app.js`) to a WebSocket connection. Traffic received over that
-  WebSocket is forwarded to a local target (e.g. `127.0.0.1:22`).
-- **Client** (runs on your local/entry box): opens a local TCP listener.
-  Every connection accepted there is tunneled over a WSS connection to the
-  server, which forwards it to the target service.
 
 ```
 [ your app ] --TCP--> [ client :2222 ] --WSS--> [ server :443 ] --TCP--> [ target service ]
 ```
 
+- **Server** — runs on the exit node. Terminates TLS, serves a normal-
+  looking page at `/`, and upgrades a chosen path (e.g. `/assets/app.js`)
+  to a WebSocket connection. Data received over that WebSocket is
+  forwarded to a local target (e.g. `127.0.0.1:22`).
+- **Client** — runs on the entry node. Opens a local TCP listener. Every
+  connection accepted there is tunneled over WSS to the server, which
+  forwards it to the target service.
+
+## Features
+
+- Single static binary, no runtime dependencies
+- Config-driven (`config.json`) — one binary, two roles
+- Systemd service with auto-restart
+- Interactive management CLI (`whispertunnel`) for day-to-day operation
+- One-line installer with automatic SSL via Certbot
+
 ## Requirements
 
-- Go 1.21+
-- A real domain with a valid TLS certificate (e.g. via Let's Encrypt) on
-  the server side — this matters far more than any other setting for
-  staying unremarkable to network inspection.
+- Go 1.21+ (only if building from source)
+- A domain pointing at the server's IP, with port 80/443 reachable, if
+  using automatic Certbot certificates
 
-## Build from source
-
-```bash
-git clone https://github.com/freeb5d/whispertunnel
-cd whispertunnel
-go mod tidy
-go build -o whispertunnel .
-```
-
-## Quick install (prebuilt binary)
+## Install
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/freeb5d/whispertunnel/main/install.sh)
 ```
 
 The installer asks whether this machine is a **server** or **client**,
-generates a config, and installs a systemd service. It also installs a
-management command — after install, just run:
+generates a config, obtains an SSL certificate (optional, automatic via
+Certbot), and installs a systemd service.
+
+## Managing the service
+
+After install, run:
 
 ```bash
 whispertunnel
 ```
 
-to get an interactive menu (start/stop/restart, view logs, view or edit
-config, rotate the tunnel key, reconfigure, update, uninstall) — similar
-to the menu of familiar panel installers like `x-ui`.
+for an interactive menu: start/stop/restart, view logs, view or edit the
+config, rotate the tunnel key, reconfigure, renew the SSL certificate,
+update, or uninstall.
 
 Non-interactive shortcuts also work:
 
@@ -61,6 +63,15 @@ whispertunnel restart
 whispertunnel status
 whispertunnel logs
 whispertunnel uninstall
+```
+
+## Build from source
+
+```bash
+git clone https://github.com/freeb5d/whispertunnel
+cd whispertunnel
+go mod tidy
+go build -o whispertunnel .
 ```
 
 ## Manual configuration
@@ -97,7 +108,7 @@ Run either with:
 ./whispertunnel -config config.json
 ```
 
-## Notes on blending in
+## Staying unremarkable
 
 - Use a real certificate, not self-signed.
 - Give the WebSocket path an innocuous name, not `/tunnel` or `/ws`.
@@ -107,7 +118,7 @@ Run either with:
 ## Uninstall
 
 ```bash
-bash install.sh uninstall
+whispertunnel uninstall
 ```
 
 ## License
