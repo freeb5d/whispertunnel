@@ -130,6 +130,22 @@ do_cert() {
   press_enter
 }
 
+do_panel_creds() {
+  echo ""
+  bash <(curl -Ls "$INSTALLER_URL") panel-creds
+  press_enter
+}
+
+do_panel_reset() {
+  echo ""
+  red "This generates a new panel port, username, and password."
+  read -rp "Continue? [y/N]: " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    bash <(curl -Ls "$INSTALLER_URL") panel-reset
+  fi
+  press_enter
+}
+
 do_version() {
   echo ""
   if [[ -x "$BIN_PATH" ]]; then
@@ -161,6 +177,8 @@ main_menu() {
   echo "12) Update to latest release"
   echo "13) Uninstall"
   echo "14) Get/renew SSL certificate (Certbot)"
+  echo "15) Show web panel URL/credentials"
+  echo "16) Reset web panel credentials"
   echo " 0) Exit"
   echo "=================================================="
   read -rp "Choose an option: " choice
@@ -180,6 +198,8 @@ main_menu() {
     12) do_update ;;
     13) do_uninstall ;;
     14) do_cert ;;
+    15) do_panel_creds ;;
+    16) do_panel_reset ;;
     0) exit 0 ;;
     *) red "Invalid choice" ;;
   esac

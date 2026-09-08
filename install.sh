@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # WhisperTunnel installer
 # Usage: bash <(curl -Ls https://raw.githubusercontent.com/freeb5d/whispertunnel/main/install.sh)
-# Subcommands: install (default) | uninstall | update | reconfigure | cert
+# Subcommands: install (default) | uninstall | update | reconfigure | cert | panel-creds | panel-reset
 
 set -e
 
@@ -10,6 +10,7 @@ RAW="https://raw.githubusercontent.com/freeb5d/whispertunnel/main"
 INSTALL_DIR="/usr/local/whispertunnel"
 BIN_PATH="${INSTALL_DIR}/whispertunnel-bin"
 CONFIG_PATH="${INSTALL_DIR}/config.json"
+PANEL_CONFIG_PATH="${INSTALL_DIR}/panel.json"
 SERVICE_PATH="/etc/systemd/system/whispertunnel.service"
 MENU_PATH="/usr/local/bin/whispertunnel"
 
@@ -30,6 +31,15 @@ detect_arch() {
     aarch64|arm64) ARCH="arm64" ;;
     *) red "Unsupported architecture: $(uname -m)"; exit 1 ;;
   esac
+}
+
+rand_str() {
+  local len="${1:-16}"
+  head -c 64 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c "$len"
+}
+
+rand_port() {
+  echo $(( (RANDOM % 40000) + 20000 ))
 }
 
 install_binary() {
@@ -65,7 +75,7 @@ ask_role() {
 ask_common() {
   read -rp "Tunnel key (secret) [enter to generate randomly]: " TKEY
   if [[ -z "$TKEY" ]]; then
-    TKEY=$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
+    TKEY=$(rand_str 32)
     yellow "Generated random key: $TKEY"
   fi
 }
@@ -160,15 +170,30 @@ configure_client() {
 EOF
 }
 
+configure_panel() {
+  PANEL_PORT=$(rand_port)
+  PANEL_USER="admin_$(rand_str 6)"
+  PANEL_PASS=$(rand_str 20)
+
+  cat > "$PANEL_CONFIG_PATH" <<EOF
+{
+  "listen_port": $PANEL_PORT,
+  "username": "$PANEL_USER",
+  "password": "$PANEL_PASS"
+}
+EOF
+  chmod 600 "$PANEL_CONFIG_PATH"
+}
+
 install_service() {
   cat > "$SERVICE_PATH" <<EOF
 [Unit]
-Description=WhisperTunnel Service
+Description=WhisperTunnel Service (tunnel + panel)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=${BIN_PATH} -config ${CONFIG_PATH}
+ExecStart=${BIN_PATH} -config ${CONFIG_PATH} -panel-config ${PANEL_CONFIG_PATH}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=1048576
@@ -182,16 +207,29 @@ EOF
   systemctl restart whispertunnel
 }
 
+server_ip() {
+  curl -s -4 --max-time 3 ifconfig.me 2>/dev/null || curl -s -4 --max-time 3 icanhazip.com 2>/dev/null || echo "<your-server-ip>"
+}
+
 status_check() {
   sleep 1
   if systemctl is-active --quiet whispertunnel; then
-    green "WhisperTunnel installed and running successfully."
+    green "WhisperTunnel installed and running successfully (tunnel + panel in one service)."
   else
     red "Service did not come up. Check logs: journalctl -u whispertunnel -e"
   fi
+
+  IP=$(server_ip)
   echo ""
-  echo "To manage it (start/stop/logs/config/uninstall, etc.), just run:"
+  echo "=================================================="
+  echo " Web panel:"
+  echo "   URL:      http://${IP}:${PANEL_PORT}/"
+  echo "   Username: ${PANEL_USER}"
+  echo "   Password: ${PANEL_PASS}"
+  echo "=================================================="
+  yellow "Save these credentials now — the password is not shown again."
   echo ""
+  echo "To manage from the terminal instead, run:"
   green "    whispertunnel"
   echo ""
 }
@@ -215,6 +253,7 @@ do_install() {
     configure_client
   fi
 
+  configure_panel
   install_service
   status_check
 }
@@ -270,10 +309,34 @@ do_cert() {
   fi
 }
 
+do_panel_creds() {
+  require_root
+  if [[ ! -f "$PANEL_CONFIG_PATH" ]]; then
+    red "Panel config not found."
+    exit 1
+  fi
+  PANEL_PORT=$(grep -o '"listen_port"[^,}]*' "$PANEL_CONFIG_PATH" | grep -o '[0-9]*')
+  PANEL_USER=$(grep -o '"username"[^,}]*' "$PANEL_CONFIG_PATH" | sed 's/.*: *"//;s/"//')
+  PANEL_PASS=$(grep -o '"password"[^,}]*' "$PANEL_CONFIG_PATH" | sed 's/.*: *"//;s/"//')
+  IP=$(server_ip)
+  echo "URL:      http://${IP}:${PANEL_PORT}/"
+  echo "Username: ${PANEL_USER}"
+  echo "Password: ${PANEL_PASS}"
+}
+
+do_panel_reset() {
+  require_root
+  configure_panel
+  systemctl restart whispertunnel
+  do_panel_creds
+}
+
 case "$1" in
   uninstall) do_uninstall ;;
   update) do_update ;;
   reconfigure) do_reconfigure ;;
   cert) do_cert ;;
+  panel-creds) do_panel_creds ;;
+  panel-reset) do_panel_reset ;;
   *) do_install ;;
 esac

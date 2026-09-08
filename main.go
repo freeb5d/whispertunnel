@@ -1,13 +1,15 @@
 // WhisperTunnel — a TCP-over-WebSocket tunnel designed to blend in with
-// ordinary HTTPS web traffic.
+// ordinary HTTPS web traffic, with an optional built-in web panel for
+// management.
 //
 // Usage:
-//   whispertunnel -config config.json
+//   whispertunnel -config config.json [-panel-config panel.json]
 //
-// The "role" field inside config.json determines whether this process
-// runs as a server (terminates TLS, upgrades to WS, forwards to a local
-// target) or a client (dials the server over WSS, exposes a local TCP
-// listener).
+// The "role" field inside config.json determines whether the tunnel
+// runs as a server (terminates TLS, upgrades to WS, forwards to a
+// local target) or a client (dials the server over WSS, exposes a
+// local TCP listener). If -panel-config points to an existing file,
+// the web panel also starts, in the same process.
 package main
 
 import (
@@ -23,18 +25,20 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const version = "2.0.0"
+
 // ---------- Config ----------
 
 type Config struct {
 	Role string `json:"role"` // "server" or "client"
 
 	// Server fields
-	Domain      string `json:"domain,omitempty"`
-	WSPath      string `json:"ws_path,omitempty"`
-	Target      string `json:"target,omitempty"`
-	ListenPort  int    `json:"listen_port,omitempty"`
-	CertPath    string `json:"cert_path,omitempty"`
-	KeyPath     string `json:"key_path,omitempty"`
+	Domain     string `json:"domain,omitempty"`
+	WSPath     string `json:"ws_path,omitempty"`
+	Target     string `json:"target,omitempty"`
+	ListenPort int    `json:"listen_port,omitempty"`
+	CertPath   string `json:"cert_path,omitempty"`
+	KeyPath    string `json:"key_path,omitempty"`
 
 	// Client fields
 	RemoteURL string `json:"remote_url,omitempty"`
@@ -114,7 +118,7 @@ func runServer(cfg *Config) {
 		},
 	}
 
-	log.Printf("[server] listening on :%d (ws path: %s)\n", port, wsPath)
+	log.Printf("[tunnel] server listening on :%d (ws path: %s)\n", port, wsPath)
 	log.Fatal(srv.ListenAndServeTLS(cfg.CertPath, cfg.KeyPath))
 }
 
@@ -132,7 +136,7 @@ func runClient(cfg *Config) {
 	if err != nil {
 		log.Fatalf("listen error: %v", err)
 	}
-	log.Printf("[client] local listener on %s -> %s\n", cfg.LocalAddr, cfg.RemoteURL)
+	log.Printf("[tunnel] client listener on %s -> %s\n", cfg.LocalAddr, cfg.RemoteURL)
 
 	for {
 		conn, err := ln.Accept()
@@ -172,7 +176,6 @@ func handleClientConn(cfg *Config, local net.Conn) {
 
 // ---------- Shared pipe helpers ----------
 
-// pipeWSToTCP relays data between an already-upgraded WS connection and a TCP conn (server side).
 func pipeWSToTCP(ws *websocket.Conn, tcp net.Conn) {
 	errc := make(chan error, 2)
 
@@ -208,7 +211,6 @@ func pipeWSToTCP(ws *websocket.Conn, tcp net.Conn) {
 	<-errc
 }
 
-// pipeTCPToWS relays data between a local TCP conn and a WS connection (client side).
 func pipeTCPToWS(tcp net.Conn, ws *websocket.Conn) {
 	errc := make(chan error, 2)
 
@@ -244,7 +246,6 @@ func pipeTCPToWS(tcp net.Conn, ws *websocket.Conn) {
 	<-errc
 }
 
-// itoa avoids importing strconv just for one call site's readability preference.
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
@@ -269,10 +270,9 @@ func itoa(n int) string {
 
 // ---------- main ----------
 
-const version = "1.0.0"
-
 func main() {
 	configPath := flag.String("config", "config.json", "path to config.json")
+	panelConfigPath := flag.String("panel-config", "panel.json", "path to panel.json (panel starts only if this file exists)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -282,9 +282,13 @@ func main() {
 	}
 
 	cfg := loadConfig(*configPath)
-
 	if cfg.TunnelKey == "" {
 		log.Fatal("config missing tunnel_key")
+	}
+
+	// Start the web panel in the background if a panel config is present.
+	if _, err := os.Stat(*panelConfigPath); err == nil {
+		go runPanel(*panelConfigPath, *configPath)
 	}
 
 	switch cfg.Role {

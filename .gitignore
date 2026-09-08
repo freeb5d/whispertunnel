@@ -1,5 +1,6 @@
 whispertunnel
 whispertunnel-linux-*
 config.json
+panel.json
 *.log
 .DS_Store
