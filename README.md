@@ -28,7 +28,7 @@ headers, a real TLS certificate).
 ## Build from source
 
 ```bash
-git clone https://github.com/yourusername/whispertunnel
+git clone https://github.com/freeb5d/whispertunnel
 cd whispertunnel
 go mod tidy
 go build -o whispertunnel .
@@ -37,7 +37,7 @@ go build -o whispertunnel .
 ## Quick install (prebuilt binary)
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/yourusername/whispertunnel/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/freeb5d/whispertunnel/main/install.sh)
 ```
 
 The installer asks whether this machine is a **server** or **client**,

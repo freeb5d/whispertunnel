@@ -4,8 +4,8 @@
 
 set -e
 
-REPO="https://github.com/yourusername/whispertunnel"          # <-- change to your repo
-RAW="https://raw.githubusercontent.com/yourusername/whispertunnel/main" # <-- change to your repo
+REPO="https://github.com/freeb5d/whispertunnel"          # <-- change to your repo
+RAW="https://raw.githubusercontent.com/freeb5d/whispertunnel/main" # <-- change to your repo
 INSTALL_DIR="/usr/local/whispertunnel"
 BIN_PATH="${INSTALL_DIR}/whispertunnel"
 CONFIG_PATH="${INSTALL_DIR}/config.json"

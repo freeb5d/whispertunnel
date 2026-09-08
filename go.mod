@@ -1,4 +1,4 @@
-module github.com/yourusername/whispertunnel
+module github.com/freeb5d/whispertunnel
 
 go 1.21
 
