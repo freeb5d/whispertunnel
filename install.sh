@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # WhisperTunnel installer
-# Usage: bash <(curl -Ls https://raw.githubusercontent.com/<you>/whispertunnel/main/install.sh)
+# Usage: bash <(curl -Ls https://raw.githubusercontent.com/freeb5d/whispertunnel/main/install.sh)
+# Subcommands: install (default) | uninstall | update | reconfigure
 
 set -e
 
-REPO="https://github.com/freeb5d/whispertunnel"          # <-- change to your repo
-RAW="https://raw.githubusercontent.com/freeb5d/whispertunnel/main" # <-- change to your repo
+REPO="https://github.com/freeb5d/whispertunnel"
+RAW="https://raw.githubusercontent.com/freeb5d/whispertunnel/main"
 INSTALL_DIR="/usr/local/whispertunnel"
-BIN_PATH="${INSTALL_DIR}/whispertunnel"
+BIN_PATH="${INSTALL_DIR}/whispertunnel-bin"
 CONFIG_PATH="${INSTALL_DIR}/config.json"
 SERVICE_PATH="/etc/systemd/system/whispertunnel.service"
+MENU_PATH="/usr/local/bin/whispertunnel"
 
 red()   { echo -e "\033[31m$1\033[0m"; }
 green() { echo -e "\033[32m$1\033[0m"; }
@@ -33,13 +35,18 @@ detect_arch() {
 install_binary() {
   mkdir -p "$INSTALL_DIR"
   green "در حال دریافت باینری WhisperTunnel (${ARCH})..."
-  # از GitHub Releases باینری از پیش build شده را می‌گیرد
   LATEST_URL="${REPO}/releases/latest/download/whispertunnel-linux-${ARCH}"
   if ! curl -Lso "$BIN_PATH" "$LATEST_URL"; then
     red "دانلود باینری ناموفق بود. مطمئن شوید ریلیز منتشر شده است."
     exit 1
   fi
   chmod +x "$BIN_PATH"
+}
+
+install_menu() {
+  green "در حال نصب دستور مدیریتی whispertunnel..."
+  curl -Lso "$MENU_PATH" "${RAW}/menu.sh"
+  chmod +x "$MENU_PATH"
 }
 
 ask_role() {
@@ -129,37 +136,26 @@ status_check() {
   sleep 1
   if systemctl is-active --quiet whispertunnel; then
     green "WhisperTunnel با موفقیت نصب و اجرا شد."
-    echo "برای بررسی وضعیت:   systemctl status whispertunnel"
-    echo "برای مشاهده لاگ:    journalctl -u whispertunnel -f"
-    echo "فایل کانفیگ:        $CONFIG_PATH"
   else
     red "سرویس بالا نیامد. لاگ را بررسی کنید: journalctl -u whispertunnel -e"
   fi
+  echo ""
+  echo "برای مدیریت (استارت/استاپ/لاگ/کانفیگ/حذف و...) کافیه بنویسی:"
+  echo ""
+  green "    whispertunnel"
+  echo ""
 }
 
-uninstall() {
-  systemctl stop whispertunnel 2>/dev/null || true
-  systemctl disable whispertunnel 2>/dev/null || true
-  rm -f "$SERVICE_PATH"
-  rm -rf "$INSTALL_DIR"
-  systemctl daemon-reload
-  green "WhisperTunnel حذف شد."
-  exit 0
-}
-
-main() {
+do_install() {
   require_root
   detect_arch
-
-  if [[ "$1" == "uninstall" ]]; then
-    uninstall
-  fi
 
   echo "=============================================="
   echo "        WhisperTunnel Installer"
   echo "=============================================="
 
   install_binary
+  install_menu
   ask_role
   ask_common
 
@@ -173,4 +169,42 @@ main() {
   status_check
 }
 
-main "$@"
+do_uninstall() {
+  require_root
+  systemctl stop whispertunnel 2>/dev/null || true
+  systemctl disable whispertunnel 2>/dev/null || true
+  rm -f "$SERVICE_PATH"
+  rm -rf "$INSTALL_DIR"
+  rm -f "$MENU_PATH"
+  systemctl daemon-reload
+  green "WhisperTunnel حذف شد."
+}
+
+do_update() {
+  require_root
+  detect_arch
+  install_binary
+  install_menu
+  systemctl restart whispertunnel
+  green "WhisperTunnel به‌روزرسانی شد."
+}
+
+do_reconfigure() {
+  require_root
+  ask_role
+  ask_common
+  if [[ "$ROLE" == "server" ]]; then
+    configure_server
+  else
+    configure_client
+  fi
+  systemctl restart whispertunnel
+  green "کانفیگ بازنویسی و سرویس ری‌استارت شد."
+}
+
+case "$1" in
+  uninstall) do_uninstall ;;
+  update) do_update ;;
+  reconfigure) do_reconfigure ;;
+  *) do_install ;;
+esac

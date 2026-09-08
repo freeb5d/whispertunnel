@@ -41,7 +41,27 @@ bash <(curl -Ls https://raw.githubusercontent.com/freeb5d/whispertunnel/main/ins
 ```
 
 The installer asks whether this machine is a **server** or **client**,
-generates a config, and installs a systemd service (`whispertunnel`).
+generates a config, and installs a systemd service. It also installs a
+management command — after install, just run:
+
+```bash
+whispertunnel
+```
+
+to get an interactive menu (start/stop/restart, view logs, view or edit
+config, rotate the tunnel key, reconfigure, update, uninstall) — similar
+to the menu of familiar panel installers like `x-ui`.
+
+Non-interactive shortcuts also work:
+
+```bash
+whispertunnel start
+whispertunnel stop
+whispertunnel restart
+whispertunnel status
+whispertunnel logs
+whispertunnel uninstall
+```
 
 ## Manual configuration
 

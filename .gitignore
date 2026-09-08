@@ -1,0 +1,5 @@
+whispertunnel
+whispertunnel-linux-*
+config.json
+*.log
+.DS_Store

@@ -269,9 +269,17 @@ func itoa(n int) string {
 
 // ---------- main ----------
 
+const version = "1.0.0"
+
 func main() {
 	configPath := flag.String("config", "config.json", "path to config.json")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		log.Printf("whispertunnel v%s\n", version)
+		os.Exit(0)
+	}
 
 	cfg := loadConfig(*configPath)
 
