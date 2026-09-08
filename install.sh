@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # WhisperTunnel installer
 # Usage: bash <(curl -Ls https://raw.githubusercontent.com/freeb5d/whispertunnel/main/install.sh)
-# Subcommands: install (default) | uninstall | update | reconfigure
+# Subcommands: install (default) | uninstall | update | reconfigure | cert
 
 set -e
 
@@ -19,7 +19,7 @@ yellow(){ echo -e "\033[33m$1\033[0m"; }
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
-    red "این اسکریپت باید با دسترسی root اجرا شود (sudo)."
+    red "This script must be run as root (sudo)."
     exit 1
   fi
 }
@@ -28,58 +28,108 @@ detect_arch() {
   case "$(uname -m)" in
     x86_64|amd64) ARCH="amd64" ;;
     aarch64|arm64) ARCH="arm64" ;;
-    *) red "معماری پشتیبانی نمی‌شود: $(uname -m)"; exit 1 ;;
+    *) red "Unsupported architecture: $(uname -m)"; exit 1 ;;
   esac
 }
 
 install_binary() {
   mkdir -p "$INSTALL_DIR"
-  green "در حال دریافت باینری WhisperTunnel (${ARCH})..."
+  green "Downloading WhisperTunnel binary (${ARCH})..."
   LATEST_URL="${REPO}/releases/latest/download/whispertunnel-linux-${ARCH}"
   if ! curl -Lso "$BIN_PATH" "$LATEST_URL"; then
-    red "دانلود باینری ناموفق بود. مطمئن شوید ریلیز منتشر شده است."
+    red "Binary download failed. Make sure a release has been published."
     exit 1
   fi
   chmod +x "$BIN_PATH"
 }
 
 install_menu() {
-  green "در حال نصب دستور مدیریتی whispertunnel..."
+  green "Installing the whispertunnel management command..."
   curl -Lso "$MENU_PATH" "${RAW}/menu.sh"
   chmod +x "$MENU_PATH"
 }
 
 ask_role() {
   echo ""
-  echo "نقش این سرور را انتخاب کنید:"
-  echo "  1) Server  (روی سرور خارج / مقصد نهایی، مثلا کنار SSH)"
-  echo "  2) Client  (روی سرور داخل / کنار سرویسی که میخوای تونل شه)"
-  read -rp "انتخاب [1-2]: " ROLE_CHOICE
+  echo "Select the role for this machine:"
+  echo "  1) Server  (the exit box / final destination, e.g. next to SSH)"
+  echo "  2) Client  (the entry box / next to the service you want tunneled)"
+  read -rp "Choice [1-2]: " ROLE_CHOICE
   case "$ROLE_CHOICE" in
     1) ROLE="server" ;;
     2) ROLE="client" ;;
-    *) red "انتخاب نامعتبر"; exit 1 ;;
+    *) red "Invalid choice"; exit 1 ;;
   esac
 }
 
 ask_common() {
-  read -rp "کلید مخفی تونل (Tunnel Key) [enter برای تولید تصادفی]: " TKEY
+  read -rp "Tunnel key (secret) [enter to generate randomly]: " TKEY
   if [[ -z "$TKEY" ]]; then
     TKEY=$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
-    yellow "کلید تصادفی تولید شد: $TKEY"
+    yellow "Generated random key: $TKEY"
+  fi
+}
+
+issue_cert_certbot() {
+  local domain="$1"
+  yellow "Installing Certbot (if not already installed)..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y certbot >/dev/null 2>&1
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y certbot >/dev/null 2>&1
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y certbot >/dev/null 2>&1
+  else
+    red "Unknown package manager; install certbot manually."
+    return 1
+  fi
+
+  if ! command -v certbot >/dev/null 2>&1; then
+    red "Certbot installation failed."
+    return 1
+  fi
+
+  yellow "Requesting a certificate for ${domain} (port 80 must be free)..."
+  systemctl stop whispertunnel 2>/dev/null || true
+
+  if certbot certonly --standalone --non-interactive --agree-tos \
+      -m "admin@${domain}" -d "${domain}"; then
+    CERT_PATH="/etc/letsencrypt/live/${domain}/fullchain.pem"
+    KEY_PATH="/etc/letsencrypt/live/${domain}/privkey.pem"
+    green "Certificate obtained successfully."
+    return 0
+  else
+    red "Failed to obtain certificate. Make sure the domain points to this server's IP and port 80 is open."
+    return 1
   fi
 }
 
 configure_server() {
-  read -rp "دامنه‌ای که SSL روش ست شده (مثلا example.com): " DOMAIN
-  read -rp "مسیر پنهان وب‌سوکت (مثلا /assets/app.js) [پیش‌فرض: /assets/app.js]: " WSPATH
+  read -rp "Domain with SSL set up for it (e.g. example.com): " DOMAIN
+  read -rp "Hidden WebSocket path (e.g. /assets/app.js) [default: /assets/app.js]: " WSPATH
   WSPATH=${WSPATH:-/assets/app.js}
-  read -rp "آدرس و پورت سرویس مقصد (مثلا 127.0.0.1:22) [پیش‌فرض: 127.0.0.1:22]: " TARGET
+  read -rp "Target service address:port (e.g. 127.0.0.1:22) [default: 127.0.0.1:22]: " TARGET
   TARGET=${TARGET:-127.0.0.1:22}
-  read -rp "پورت لیسن TLS [پیش‌فرض: 443]: " LISTEN_PORT
+  read -rp "TLS listen port [default: 443]: " LISTEN_PORT
   LISTEN_PORT=${LISTEN_PORT:-443}
-  read -rp "مسیر fullchain.pem: " CERT_PATH
-  read -rp "مسیر privkey.pem: " KEY_PATH
+
+  echo ""
+  echo "SSL certificate:"
+  echo "  1) Get automatically via Certbot (recommended — needs a valid domain and open port 80)"
+  echo "  2) Enter path to an existing certificate manually"
+  read -rp "Choice [1-2]: " CERT_CHOICE
+
+  if [[ "$CERT_CHOICE" == "1" ]]; then
+    if ! issue_cert_certbot "$DOMAIN"; then
+      yellow "Falling back to manual entry."
+      read -rp "Path to fullchain.pem: " CERT_PATH
+      read -rp "Path to privkey.pem: " KEY_PATH
+    fi
+  else
+    read -rp "Path to fullchain.pem: " CERT_PATH
+    read -rp "Path to privkey.pem: " KEY_PATH
+  fi
 
   cat > "$CONFIG_PATH" <<EOF
 {
@@ -96,8 +146,8 @@ EOF
 }
 
 configure_client() {
-  read -rp "آدرس سرور (wss://example.com/assets/app.js): " REMOTE_URL
-  read -rp "پورت لوکال که کاربران/سرویس‌ها بهش وصل می‌شن [پیش‌فرض: 2222]: " LOCAL_PORT
+  read -rp "Server address (wss://example.com/assets/app.js): " REMOTE_URL
+  read -rp "Local port that apps/services will connect to [default: 2222]: " LOCAL_PORT
   LOCAL_PORT=${LOCAL_PORT:-2222}
 
   cat > "$CONFIG_PATH" <<EOF
@@ -135,12 +185,12 @@ EOF
 status_check() {
   sleep 1
   if systemctl is-active --quiet whispertunnel; then
-    green "WhisperTunnel با موفقیت نصب و اجرا شد."
+    green "WhisperTunnel installed and running successfully."
   else
-    red "سرویس بالا نیامد. لاگ را بررسی کنید: journalctl -u whispertunnel -e"
+    red "Service did not come up. Check logs: journalctl -u whispertunnel -e"
   fi
   echo ""
-  echo "برای مدیریت (استارت/استاپ/لاگ/کانفیگ/حذف و...) کافیه بنویسی:"
+  echo "To manage it (start/stop/logs/config/uninstall, etc.), just run:"
   echo ""
   green "    whispertunnel"
   echo ""
@@ -177,7 +227,7 @@ do_uninstall() {
   rm -rf "$INSTALL_DIR"
   rm -f "$MENU_PATH"
   systemctl daemon-reload
-  green "WhisperTunnel حذف شد."
+  green "WhisperTunnel has been removed."
 }
 
 do_update() {
@@ -186,7 +236,7 @@ do_update() {
   install_binary
   install_menu
   systemctl restart whispertunnel
-  green "WhisperTunnel به‌روزرسانی شد."
+  green "WhisperTunnel updated."
 }
 
 do_reconfigure() {
@@ -199,12 +249,31 @@ do_reconfigure() {
     configure_client
   fi
   systemctl restart whispertunnel
-  green "کانفیگ بازنویسی و سرویس ری‌استارت شد."
+  green "Config rewritten and service restarted."
+}
+
+do_cert() {
+  require_root
+  if [[ ! -f "$CONFIG_PATH" ]]; then
+    red "Config not found; run the installer first."
+    exit 1
+  fi
+  DOMAIN=$(grep -o '"domain"[^,}]*' "$CONFIG_PATH" | sed 's/.*: *"//;s/"//')
+  if [[ -z "$DOMAIN" ]]; then
+    read -rp "Domain: " DOMAIN
+  fi
+  if issue_cert_certbot "$DOMAIN"; then
+    sed -i "s#\"cert_path\": *\"[^\"]*\"#\"cert_path\": \"$CERT_PATH\"#" "$CONFIG_PATH"
+    sed -i "s#\"key_path\": *\"[^\"]*\"#\"key_path\": \"$KEY_PATH\"#" "$CONFIG_PATH"
+    systemctl restart whispertunnel
+    green "Certificate updated and service restarted."
+  fi
 }
 
 case "$1" in
   uninstall) do_uninstall ;;
   update) do_update ;;
   reconfigure) do_reconfigure ;;
+  cert) do_cert ;;
   *) do_install ;;
 esac

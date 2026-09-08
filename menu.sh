@@ -16,33 +16,33 @@ cyan()  { echo -e "\033[36m$1\033[0m"; }
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
-    red "این دستور باید با دسترسی root اجرا شود (sudo whispertunnel)."
+    red "This command must be run as root (sudo whispertunnel)."
     exit 1
   fi
 }
 
 press_enter() {
   echo ""
-  read -rp "برای بازگشت به منو Enter را بزنید..." _
+  read -rp "Press Enter to return to the menu..." _
 }
 
 show_status_line() {
   if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-    echo -e "وضعیت سرویس: \033[32m● در حال اجرا\033[0m"
+    echo -e "Service status: \033[32m* running\033[0m"
   else
-    echo -e "وضعیت سرویس: \033[31m● متوقف\033[0m"
+    echo -e "Service status: \033[31m* stopped\033[0m"
   fi
   if [[ -f "$CONFIG_PATH" ]]; then
     ROLE=$(grep -o '"role"[^,}]*' "$CONFIG_PATH" | sed 's/.*: *"//;s/"//')
-    echo "نقش: ${ROLE:-نامشخص}"
+    echo "Role: ${ROLE:-unknown}"
   fi
 }
 
-do_start()    { systemctl start "$SERVICE_NAME"    && green "سرویس استارت شد." || red "خطا در استارت."; }
-do_stop()     { systemctl stop "$SERVICE_NAME"     && green "سرویس متوقف شد."  || red "خطا در توقف."; }
-do_restart()  { systemctl restart "$SERVICE_NAME"  && green "سرویس ری‌استارت شد." || red "خطا در ری‌استارت."; }
-do_enable()   { systemctl enable "$SERVICE_NAME"   && green "استارت خودکار فعال شد."; }
-do_disable()  { systemctl disable "$SERVICE_NAME"  && yellow "استارت خودکار غیرفعال شد."; }
+do_start()    { systemctl start "$SERVICE_NAME"    && green "Service started."    || red "Failed to start."; }
+do_stop()     { systemctl stop "$SERVICE_NAME"     && green "Service stopped."   || red "Failed to stop."; }
+do_restart()  { systemctl restart "$SERVICE_NAME"  && green "Service restarted." || red "Failed to restart."; }
+do_enable()   { systemctl enable "$SERVICE_NAME"   && green "Start on boot enabled."; }
+do_disable()  { systemctl disable "$SERVICE_NAME"  && yellow "Start on boot disabled."; }
 
 do_status_full() {
   echo ""
@@ -52,7 +52,7 @@ do_status_full() {
 
 do_logs() {
   echo ""
-  yellow "برای خروج از لاگ، Ctrl+C را بزنید."
+  yellow "Press Ctrl+C to exit the log view."
   echo ""
   journalctl -u "$SERVICE_NAME" -f
 }
@@ -60,11 +60,11 @@ do_logs() {
 do_show_config() {
   echo ""
   if [[ -f "$CONFIG_PATH" ]]; then
-    cyan "محتوای فایل کانفیگ ($CONFIG_PATH):"
+    cyan "Config file ($CONFIG_PATH):"
     echo ""
     cat "$CONFIG_PATH"
   else
-    red "فایل کانفیگ پیدا نشد."
+    red "Config file not found."
   fi
   press_enter
 }
@@ -72,7 +72,7 @@ do_show_config() {
 do_edit_config() {
   ${EDITOR:-nano} "$CONFIG_PATH"
   echo ""
-  read -rp "سرویس ری‌استارت شود تا تغییرات اعمال شود؟ [y/N]: " ans
+  read -rp "Restart the service to apply changes? [y/N]: " ans
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     do_restart
   fi
@@ -81,25 +81,25 @@ do_edit_config() {
 
 do_change_key() {
   echo ""
-  read -rp "کلید تونل جدید [enter برای تولید تصادفی]: " NEWKEY
+  read -rp "New tunnel key [enter to generate randomly]: " NEWKEY
   if [[ -z "$NEWKEY" ]]; then
     NEWKEY=$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
   fi
   if [[ -f "$CONFIG_PATH" ]]; then
     sed -i "s/\"tunnel_key\": *\"[^\"]*\"/\"tunnel_key\": \"$NEWKEY\"/" "$CONFIG_PATH"
-    green "کلید جدید: $NEWKEY"
-    yellow "توجه: باید همین کلید را در کانفیگ سرور/کلاینت طرف مقابل هم تنظیم کنید."
+    green "New key: $NEWKEY"
+    yellow "Note: set this same key on the other side (server/client) too."
     do_restart
   else
-    red "فایل کانفیگ پیدا نشد."
+    red "Config file not found."
   fi
   press_enter
 }
 
 do_reconfigure() {
   echo ""
-  yellow "این کار کانفیگ فعلی را بازنویسی می‌کند."
-  read -rp "ادامه می‌دهید؟ [y/N]: " ans
+  yellow "This will overwrite the current config."
+  read -rp "Continue? [y/N]: " ans
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     bash <(curl -Ls "$INSTALLER_URL") reconfigure
   fi
@@ -108,15 +108,15 @@ do_reconfigure() {
 
 do_update() {
   echo ""
-  yellow "دریافت آخرین نسخه از GitHub..."
+  yellow "Fetching the latest release from GitHub..."
   bash <(curl -Ls "$INSTALLER_URL") update
   press_enter
 }
 
 do_uninstall() {
   echo ""
-  red "این کار سرویس، باینری و کانفیگ WhisperTunnel را کامل حذف می‌کند."
-  read -rp "مطمئن هستید؟ [y/N]: " ans
+  red "This will completely remove the WhisperTunnel service, binary, and config."
+  read -rp "Are you sure? [y/N]: " ans
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     bash <(curl -Ls "$INSTALLER_URL") uninstall
     exit 0
@@ -124,12 +124,18 @@ do_uninstall() {
   press_enter
 }
 
+do_cert() {
+  echo ""
+  bash <(curl -Ls "$INSTALLER_URL") cert
+  press_enter
+}
+
 do_version() {
   echo ""
   if [[ -x "$BIN_PATH" ]]; then
-    "$BIN_PATH" -version 2>/dev/null || echo "نسخه در دسترس نیست."
+    "$BIN_PATH" -version 2>/dev/null || echo "Version not available."
   else
-    red "باینری پیدا نشد."
+    red "Binary not found."
   fi
   press_enter
 }
@@ -141,22 +147,23 @@ main_menu() {
   echo "=================================================="
   show_status_line
   echo "--------------------------------------------------"
-  echo " 1) Start                 استارت سرویس"
-  echo " 2) Stop                  توقف سرویس"
-  echo " 3) Restart               ری‌استارت سرویس"
-  echo " 4) Status (کامل)"
-  echo " 5) نمایش لاگ (زنده)"
-  echo " 6) نمایش کانفیگ"
-  echo " 7) ویرایش کانفیگ"
-  echo " 8) تغییر کلید تونل"
-  echo " 9) بازپیکربندی کامل (نقش/دامنه/پورت...)"
-  echo "10) فعال کردن استارت خودکار (boot)"
-  echo "11) غیرفعال کردن استارت خودکار"
-  echo "12) بروزرسانی به آخرین نسخه"
-  echo "13) حذف کامل"
-  echo " 0) خروج"
+  echo " 1) Start"
+  echo " 2) Stop"
+  echo " 3) Restart"
+  echo " 4) Full status"
+  echo " 5) View live logs"
+  echo " 6) Show config"
+  echo " 7) Edit config"
+  echo " 8) Change tunnel key"
+  echo " 9) Reconfigure (role/domain/port...)"
+  echo "10) Enable start on boot"
+  echo "11) Disable start on boot"
+  echo "12) Update to latest release"
+  echo "13) Uninstall"
+  echo "14) Get/renew SSL certificate (Certbot)"
+  echo " 0) Exit"
   echo "=================================================="
-  read -rp "انتخاب خود را وارد کنید: " choice
+  read -rp "Choose an option: " choice
 
   case "$choice" in
     1) do_start ;;
@@ -172,15 +179,15 @@ main_menu() {
     11) do_disable ;;
     12) do_update ;;
     13) do_uninstall ;;
+    14) do_cert ;;
     0) exit 0 ;;
-    *) red "انتخاب نامعتبر" ;;
+    *) red "Invalid choice" ;;
   esac
 }
 
 require_root
 
 if [[ -n "$1" ]]; then
-  # non-interactive shortcuts: whispertunnel start|stop|restart|status|logs|uninstall
   case "$1" in
     start) do_start ;;
     stop) do_stop ;;
@@ -188,7 +195,7 @@ if [[ -n "$1" ]]; then
     status) systemctl status "$SERVICE_NAME" --no-pager -l ;;
     logs) journalctl -u "$SERVICE_NAME" -f ;;
     uninstall) bash <(curl -Ls "$INSTALLER_URL") uninstall ;;
-    *) red "دستور نامعتبر: $1" ;;
+    *) red "Invalid command: $1" ;;
   esac
   exit 0
 fi
@@ -196,5 +203,5 @@ fi
 while true; do
   main_menu
   echo ""
-  read -rp "برای بازگشت به منو Enter را بزنید..." _
+  read -rp "Press Enter to return to the menu..." _
 done
