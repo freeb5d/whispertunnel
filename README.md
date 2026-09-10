@@ -46,7 +46,9 @@ The installer asks whether this machine is a **server** or **client**,
 generates a config, obtains an SSL certificate (optional, automatic via
 Certbot), and installs the systemd service — which also brings up the
 web panel on a random port with a randomly generated username and
-password, printed once at the end of installation.
+password, printed once at the end of installation. It also asks whether
+the panel should be reachable only from localhost (recommended) or on
+all interfaces; see [Web panel](#web-panel).
 
 ## Web panel
 
@@ -54,12 +56,29 @@ A dashboard is built into the same binary and process as the tunnel:
 live status, start/stop/restart, logs, config overview, and tunnel-key
 rotation, styled as a small dark-themed panel.
 
-The installer prints the panel URL and credentials at the end of setup:
+During install you're asked how the panel should be exposed:
+
+- **Localhost only (recommended)** — the panel binds to `127.0.0.1` and
+  isn't reachable from outside the box at all. Reach it by forwarding
+  the port over SSH:
+  ```bash
+  ssh -L 8080:127.0.0.1:41822 user@your-server
+  # then open http://127.0.0.1:8080/ locally
+  ```
+- **All interfaces** — the panel binds to `0.0.0.0` and is reachable
+  directly at `http://<server-ip>:<port>/`, protected only by the panel
+  login (rate-limited, but still just a username/password over plain
+  HTTP unless you put a reverse proxy with TLS in front of it).
+
+The installer prints the panel URL (or SSH forwarding command) and
+credentials at the end of setup:
 
 ```
 ==================================================
  Web panel:
-   URL:      http://203.0.113.10:41822/
+   Localhost only — from your machine, run:
+   ssh -L 8080:127.0.0.1:41822 <user>@203.0.113.10
+   then open: http://127.0.0.1:8080/
    Username: admin_x7f2q9
    Password: 3fJ8pQ1zW0mR6tYaC4bN9dLk
 ==================================================
@@ -76,8 +95,9 @@ whispertunnel      # then choose "Show web panel URL/credentials"
                     # or "Reset web panel credentials"
 ```
 
-Put the panel behind a reverse proxy with its own TLS if you want to
-access it over HTTPS instead of plain HTTP.
+Put the panel behind a reverse proxy with its own TLS if you chose
+all-interfaces exposure and want to access it over HTTPS instead of
+plain HTTP.
 
 ## Managing the service
 
@@ -172,11 +192,16 @@ go build -o whispertunnel .
 
 ```json
 {
+  "listen_addr": "127.0.0.1",
   "listen_port": 41822,
   "username": "admin_x7f2q9",
   "password": "change-me"
 }
 ```
+
+`listen_addr` is optional and defaults to `0.0.0.0` (all interfaces) if
+omitted. Set it to `127.0.0.1` to keep the panel reachable only from the
+server itself (e.g. over an SSH-forwarded port).
 
 Run with both:
 

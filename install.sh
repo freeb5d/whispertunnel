@@ -170,13 +170,27 @@ configure_client() {
 EOF
 }
 
+ask_panel_exposure() {
+  echo ""
+  echo "Web panel access:"
+  echo "  1) Localhost only (recommended — reach it via 'ssh -L 8080:127.0.0.1:<port> user@server')"
+  echo "  2) All interfaces (reachable directly at http://<server-ip>:<port>/, protected only by the panel login)"
+  read -rp "Choice [1-2, default: 1]: " PANEL_EXPOSURE_CHOICE
+  case "$PANEL_EXPOSURE_CHOICE" in
+    2) PANEL_LISTEN_ADDR="0.0.0.0" ;;
+    *) PANEL_LISTEN_ADDR="127.0.0.1" ;;
+  esac
+}
+
 configure_panel() {
+  ask_panel_exposure
   PANEL_PORT=$(rand_port)
   PANEL_USER="admin_$(rand_str 6)"
   PANEL_PASS=$(rand_str 20)
 
   cat > "$PANEL_CONFIG_PATH" <<EOF
 {
+  "listen_addr": "$PANEL_LISTEN_ADDR",
   "listen_port": $PANEL_PORT,
   "username": "$PANEL_USER",
   "password": "$PANEL_PASS"
@@ -211,6 +225,22 @@ server_ip() {
   curl -s -4 --max-time 3 ifconfig.me 2>/dev/null || curl -s -4 --max-time 3 icanhazip.com 2>/dev/null || echo "<your-server-ip>"
 }
 
+# panel_url prints how to reach the panel given its configured listen_addr:
+# a direct URL when bound to all interfaces, or an ssh -L hint when
+# restricted to localhost (the panel isn't reachable from outside in that case).
+panel_url() {
+  local addr port
+  addr=$(grep -o '"listen_addr"[^,}]*' "$PANEL_CONFIG_PATH" 2>/dev/null | sed 's/.*: *"//;s/"//')
+  port=$(grep -o '"listen_port"[^,}]*' "$PANEL_CONFIG_PATH" 2>/dev/null | grep -o '[0-9]*')
+  if [[ "$addr" == "127.0.0.1" || "$addr" == "localhost" ]]; then
+    echo "Localhost only — from your machine, run:"
+    echo "   ssh -L 8080:127.0.0.1:${port} <user>@$(server_ip)"
+    echo "then open: http://127.0.0.1:8080/"
+  else
+    echo "URL:      http://$(server_ip):${port}/"
+  fi
+}
+
 status_check() {
   sleep 1
   if systemctl is-active --quiet whispertunnel; then
@@ -219,11 +249,10 @@ status_check() {
     red "Service did not come up. Check logs: journalctl -u whispertunnel -e"
   fi
 
-  IP=$(server_ip)
   echo ""
   echo "=================================================="
   echo " Web panel:"
-  echo "   URL:      http://${IP}:${PANEL_PORT}/"
+  panel_url | sed 's/^/   /'
   echo "   Username: ${PANEL_USER}"
   echo "   Password: ${PANEL_PASS}"
   echo "=================================================="
@@ -315,11 +344,9 @@ do_panel_creds() {
     red "Panel config not found."
     exit 1
   fi
-  PANEL_PORT=$(grep -o '"listen_port"[^,}]*' "$PANEL_CONFIG_PATH" | grep -o '[0-9]*')
   PANEL_USER=$(grep -o '"username"[^,}]*' "$PANEL_CONFIG_PATH" | sed 's/.*: *"//;s/"//')
   PANEL_PASS=$(grep -o '"password"[^,}]*' "$PANEL_CONFIG_PATH" | sed 's/.*: *"//;s/"//')
-  IP=$(server_ip)
-  echo "URL:      http://${IP}:${PANEL_PORT}/"
+  panel_url
   echo "Username: ${PANEL_USER}"
   echo "Password: ${PANEL_PASS}"
 }

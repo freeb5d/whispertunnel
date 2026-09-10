@@ -13,13 +13,20 @@
 package main
 
 import (
+	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -70,6 +77,13 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
+// constEqual compares two strings in constant time, without leaking their
+// length difference through timing (unlike a bare `==`, which would let a
+// remote attacker distinguish key lengths/prefixes by measuring response time).
+func constEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 func runServer(cfg *Config) {
 	mux := http.NewServeMux()
 
@@ -83,7 +97,7 @@ func runServer(cfg *Config) {
 	}
 
 	mux.HandleFunc(wsPath, func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Tunnel-Key") != cfg.TunnelKey {
+		if !constEqual(r.Header.Get("X-Tunnel-Key"), cfg.TunnelKey) {
 			http.NotFound(w, r)
 			return
 		}
@@ -102,7 +116,7 @@ func runServer(cfg *Config) {
 		}
 		defer target.Close()
 
-		pipeWSToTCP(conn, target)
+		pipe(conn, target)
 	})
 
 	port := cfg.ListenPort
@@ -111,15 +125,35 @@ func runServer(cfg *Config) {
 	}
 
 	srv := &http.Server{
-		Addr:    ":" + itoa(port),
-		Handler: mux,
+		Addr:              ":" + strconv.Itoa(port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
 	}
 
-	log.Printf("[tunnel] server listening on :%d (ws path: %s)\n", port, wsPath)
-	log.Fatal(srv.ListenAndServeTLS(cfg.CertPath, cfg.KeyPath))
+	go func() {
+		log.Printf("[tunnel] server listening on :%d (ws path: %s)\n", port, wsPath)
+		if err := srv.ListenAndServeTLS(cfg.CertPath, cfg.KeyPath); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	waitForShutdown(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+}
+
+// waitForShutdown blocks until SIGINT/SIGTERM, then runs shutdown and returns.
+func waitForShutdown(shutdown func()) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+	log.Println("[tunnel] shutting down...")
+	shutdown()
 }
 
 // ---------- Client ----------
@@ -138,14 +172,31 @@ func runClient(cfg *Config) {
 	}
 	log.Printf("[tunnel] client listener on %s -> %s\n", cfg.LocalAddr, cfg.RemoteURL)
 
+	var wg sync.WaitGroup
+	go waitForShutdown(func() {
+		_ = ln.Close()
+	})
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			if isClosedErr(err) {
+				break
+			}
 			log.Println("accept error:", err)
 			continue
 		}
-		go handleClientConn(cfg, conn)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			handleClientConn(cfg, conn)
+		}()
 	}
+	wg.Wait()
+}
+
+func isClosedErr(err error) bool {
+	return errors.Is(err, net.ErrClosed)
 }
 
 func handleClientConn(cfg *Config, local net.Conn) {
@@ -171,13 +222,46 @@ func handleClientConn(cfg *Config, local net.Conn) {
 	}
 	defer ws.Close()
 
-	pipeTCPToWS(local, ws)
+	pipe(ws, local)
 }
 
-// ---------- Shared pipe helpers ----------
+// ---------- Shared pipe helper ----------
 
-func pipeWSToTCP(ws *websocket.Conn, tcp net.Conn) {
+const (
+	maxMessageSize = 1 << 20 // 1 MiB per WS message; bounds memory per connection
+	pingInterval   = 30 * time.Second
+	pongWait       = 60 * time.Second
+)
+
+// pipe relays bytes bidirectionally between a WebSocket and a TCP connection
+// until either side closes or errors. It also sends periodic pings so idle
+// connections aren't silently dropped by intermediate proxies/load balancers.
+func pipe(ws *websocket.Conn, tcp net.Conn) {
 	errc := make(chan error, 2)
+
+	ws.SetReadLimit(maxMessageSize)
+	_ = ws.SetReadDeadline(time.Now().Add(pongWait))
+	ws.SetPongHandler(func(string) error {
+		return ws.SetReadDeadline(time.Now().Add(pongWait))
+	})
+
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
 
 	go func() {
 		for {
@@ -209,63 +293,6 @@ func pipeWSToTCP(ws *websocket.Conn, tcp net.Conn) {
 	}()
 
 	<-errc
-}
-
-func pipeTCPToWS(tcp net.Conn, ws *websocket.Conn) {
-	errc := make(chan error, 2)
-
-	go func() {
-		buf := make([]byte, 16*1024)
-		for {
-			n, err := tcp.Read(buf)
-			if err != nil {
-				errc <- err
-				return
-			}
-			if err := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
-				errc <- err
-				return
-			}
-		}
-	}()
-
-	go func() {
-		for {
-			_, msg, err := ws.ReadMessage()
-			if err != nil {
-				errc <- err
-				return
-			}
-			if _, err := tcp.Write(msg); err != nil {
-				errc <- err
-				return
-			}
-		}
-	}()
-
-	<-errc
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
 
 // ---------- main ----------

@@ -9,13 +9,20 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type PanelConfig struct {
+	// ListenAddr is optional and defaults to 0.0.0.0 (all interfaces), matching
+	// existing installs. Set it to "127.0.0.1" in panel.json to restrict the
+	// panel to localhost and reach it over SSH port-forwarding or a reverse
+	// proxy instead of exposing the login form directly to the internet.
+	ListenAddr string `json:"listen_addr,omitempty"`
 	ListenPort int    `json:"listen_port"`
 	Username   string `json:"username"`
 	Password   string `json:"password"`
@@ -47,8 +54,18 @@ func readTunnelConfigRaw() (map[string]interface{}, error) {
 	return m, nil
 }
 
+// loginLimiter throttles repeated failed-auth attempts per source IP, to
+// slow down credential brute-forcing against the panel's basic-auth login.
+var loginLimiter = newRateLimiter(5, time.Minute)
+
 func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r)
+		if !loginLimiter.Allow(ip) {
+			http.Error(w, "too many attempts, try again later", http.StatusTooManyRequests)
+			return
+		}
+
 		u, p, ok := r.BasicAuth()
 		userOK := ok && subtle.ConstantTimeCompare([]byte(u), []byte(panelCfg.Username)) == 1
 		passOK := ok && subtle.ConstantTimeCompare([]byte(p), []byte(panelCfg.Password)) == 1
@@ -57,8 +74,37 @@ func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		loginLimiter.Reset(ip)
+
+		// Basic-auth credentials are sent by the browser on every request,
+		// including ones triggered cross-site (e.g. an auto-submitting form
+		// on another page). Reject state-changing requests whose Origin
+		// doesn't match this panel, as a minimal CSRF guard.
+		if r.Method == http.MethodPost && !sameOrigin(r) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+
 		next(w, r)
 	}
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// Not all HTTP clients send Origin (e.g. curl, the CLI); only
+		// enforce the check when a browser actually supplied one.
+		return true
+	}
+	return strings.EqualFold(origin, "https://"+r.Host) || strings.EqualFold(origin, "http://"+r.Host)
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func runSystemctl(args ...string) (string, error) {
@@ -320,11 +366,25 @@ func handleRotateKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"ok": false, "message": "cannot read config: " + err.Error()})
 		return
 	}
+
+	// Round-trip through a generic map rather than string/regex substitution:
+	// a regex replace can't tell "tunnel_key" apart from a value that happens
+	// to contain the same text, and silently corrupts the config on a
+	// mismatch. Decoding and re-encoding guarantees valid JSON either way.
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		writeJSON(w, map[string]interface{}{"ok": false, "message": "cannot parse config: " + err.Error()})
+		return
+	}
 	newKey := randomString(32)
-	content := string(b)
-	// naive JSON field replace, keeps formatting simple
-	content = replaceJSONField(content, "tunnel_key", newKey)
-	if err := os.WriteFile(panelTunnelConfigPath, []byte(content), 0600); err != nil {
+	m["tunnel_key"] = newKey
+
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		writeJSON(w, map[string]interface{}{"ok": false, "message": "cannot encode config: " + err.Error()})
+		return
+	}
+	if err := os.WriteFile(panelTunnelConfigPath, out, 0600); err != nil {
 		writeJSON(w, map[string]interface{}{"ok": false, "message": "cannot write config: " + err.Error()})
 		return
 	}
@@ -352,9 +412,23 @@ func runPanel(panelConfigPath, tunnelConfigPath string) {
 	mux.HandleFunc("/api/logs", basicAuth(handleLogs))
 	mux.HandleFunc("/api/rotate-key", basicAuth(handleRotateKey))
 
-	addr := fmt.Sprintf("0.0.0.0:%d", panelCfg.ListenPort)
+	listenAddr := panelCfg.ListenAddr
+	if listenAddr == "" {
+		listenAddr = "0.0.0.0"
+	}
+	addr := fmt.Sprintf("%s:%d", listenAddr, panelCfg.ListenPort)
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
 	log.Printf("[panel] listening on %s\n", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := srv.ListenAndServe(); err != nil {
 		log.Printf("[panel] error: %v\n", err)
 	}
 }
